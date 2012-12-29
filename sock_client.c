@@ -4,6 +4,12 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
+#include <event2/event.h>
+
+#define BUFSIZE 1024
+#define DEBUG(msg) printf("[DEBUG]%s\n", (msg))
+
+static int err = 0;
 
 int get_socket_addr(const char *addr, const uint16_t port, struct sockaddr *sa)
 {
@@ -15,6 +21,39 @@ int get_socket_addr(const char *addr, const uint16_t port, struct sockaddr *sa)
 	}
 	
 	return 0;
+}
+
+void event_ready_stdin(evutil_socket_t fd, short what, void *arg)
+{
+	DEBUG("stdin is ready for read");
+	char buf[BUFSIZE];
+	if (fgets(buf, BUFSIZE, stdin) != NULL) {
+		send(*(int*)arg, buf, strlen(buf) + 1, 0);
+	}
+	else {
+		err = -1;
+	}
+}
+
+void event_ready_socket(evutil_socket_t fd, short what, void *arg)
+{
+	DEBUG("socket is ready for read");
+	char buf[BUFSIZE];
+	if (recv(fd, buf, BUFSIZE, 0) > 0) {
+		fputs(buf, stdout);
+	}
+	else {
+		err = -1;
+	}
+}
+
+void event_check_err(evutil_socket_t fd, short what, void *arg)
+{
+	DEBUG("check error...");
+	if (err < 0) {
+		DEBUG("error occur!");
+		event_base_loopexit((struct event_base*)arg, NULL);
+	}
 }
 
 void conn(const char *addr, const uint16_t port)
@@ -36,6 +75,7 @@ void conn(const char *addr, const uint16_t port)
 		perror("call connect failed");
 	}
 
+	/*
 	while (1) {
 		if (fgets(buf, 1024, stdin) == NULL) {
 			perror("call fgets error");
@@ -61,6 +101,20 @@ void conn(const char *addr, const uint16_t port)
 			}   
 		}   
 	}   
+	*/
+
+	struct event *ev_stdin, *ev_socket, *ev_check;
+	struct event_base *base = event_base_new();
+	struct timeval sec5 = {10, 0};
+
+	ev_stdin = event_new(base, STDIN_FILENO, EV_READ|EV_PERSIST, event_ready_stdin, (int*)&sockfd);
+	ev_socket = event_new(base, sockfd, EV_READ|EV_PERSIST, event_ready_socket, NULL);
+	ev_check = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, event_check_err, (void*)base);
+	
+	event_add(ev_stdin, NULL);
+	event_add(ev_socket, NULL);
+	event_add(ev_check, &sec5);
+	event_base_dispatch(base);
 
 	close(sockfd);
 }
